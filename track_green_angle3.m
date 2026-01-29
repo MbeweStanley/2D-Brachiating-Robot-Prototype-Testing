@@ -1,12 +1,11 @@
-% track_green_gripper_clean.m
-% (original header and behavior preserved)
+% track_green_gripper.m
 clear; close all; clc;
 
 %% ---------------- USER PARAMETERS ----------------
-videoFile = 'ProtoSwing.mp4';   % <-- replace with your video filename
+videoFile = 'ProtoSwing.mp4';   % video filename
 outputCSV  = 'tracked_green_angles2.csv';
 
-% --- NEW: desired sampling time vector for comparison with simulation
+% desired sampling time vector for comparison with simulation
 Time = 0:0.01:1.19;  % 120 samples (0 .. 1.19 step 0.01)
 
 % HSV thresholds for green (tune if necessary)
@@ -250,7 +249,7 @@ T = table(times, positions(:,1), positions(:,2), angles, angles_smoothed, ...
 writetable(T, outputCSV);
 fprintf('Saved tracked data to %s (frames processed: %d)\n', outputCSV, processed);
 
-% --- NEW: interpolate onto requested Time vector and save sampled CSV
+% interpolate onto requested Time vector and save sampled CSV
 sampleCSV = 'tracked_green_angles_sampled2.csv';
 % Use only frames that have valid smoothed angles and positions for interpolation
 validPosIdx = find(~isnan(angles_smoothed) & ~isnan(positions(:,1)));
@@ -284,3 +283,4 @@ plot(times, angles_unwrap, 'b.-', 'DisplayName','raw (unwrap)');
 plot(times, angles_smoothed, 'r-', 'LineWidth',1.5, 'DisplayName','smoothed');
 xlabel('Time (s)'); ylabel('Angle (rad)'); legend; grid on;
 title('Tracked angle about pivot');
+
