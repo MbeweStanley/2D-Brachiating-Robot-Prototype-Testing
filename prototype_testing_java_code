@@ -1,0 +1,223 @@
+package org.firstinspires.ftc.teamcode;
+
+import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
+import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
+import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DistanceSensor;
+import com.qualcomm.robotcore.hardware.Servo;
+import com.qualcomm.robotcore.util.ElapsedTime;
+import com.qualcomm.robotcore.util.Range;
+import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
+
+@TeleOp(name = "BrachiatingPD_PFL (Blocks to Java)")
+public class BrachiatingPD_PFL extends LinearOpMode {
+
+    private DcMotor elbowMotor;          // your actuator
+    private Servo gripper1;
+    private Servo gripper2;
+    private DistanceSensor distanceSensor1;
+    private DistanceSensor distanceSensor2;
+
+    // -------- Robot parameters (same as MATLAB) --------
+    private static final double m1 = 5.0;
+    private static final double m2 = 5.0;
+    private static final double l1 = 1.0;
+    private static final double l2 = 1.0;
+    private static final double I1 = (1.0 / 3.0) * m1 * l1 * l1;
+    private static final double I2 = (1.0 / 3.0) * m2 * l2 * l2;
+    private static final double lc1 = 0.5 * l1;
+    private static final double lc2 = 0.5 * l2;
+
+    // -------- Control gains (tune these) --------
+    private static final double kp1 = 12.0;
+    private static final double kd1 = 2.5;
+    private static final double kp2 = 12.0;
+    private static final double kd2 = 2.5;
+
+    // -------- Reference values (replace with your trajectory if needed) --------
+    private static final double theta1Ref = Math.toRadians(0.0);
+    private static final double theta2Ref = Math.toRadians(45.0);
+    private static final double dtheta1Ref = 0.0;
+    private static final double dtheta2Ref = 0.0;
+    private static final double ddtheta1Ref = 0.0;
+    private static final double ddtheta2Ref = 0.0;
+
+    // -------- Motor/encoder conversion --------
+    private static final double TICKS_PER_REV = 537.7; // example: goBILDA 5202 312 RPM
+    private static final double GEAR_RATIO = 1.0;      // set to your actual ratio
+    private static final double TAU2_MAX = 1.5;        // Nm, calibrate from your drivetrain
+    private static final double BAR_DETECT_CM = 6.0;   // distance threshold for catching
+
+    private enum State { PREPARE, SWING, CATCH, HOLD }
+    private State state = State.PREPARE;
+
+    @Override
+    public void runOpMode() {
+
+        elbowMotor = hardwareMap.get(DcMotor.class, "actuator");
+        gripper1 = hardwareMap.get(Servo.class, "gripper1");
+        gripper2 = hardwareMap.get(Servo.class, "gripper2");
+        distanceSensor1 = hardwareMap.get(DistanceSensor.class, "Distance_sensor1");
+        distanceSensor2 = hardwareMap.get(DistanceSensor.class, "Distance_sensor2");
+
+        // Initialization
+        elbowMotor.setDirection(DcMotor.Direction.REVERSE);
+        elbowMotor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        elbowMotor.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
+        elbowMotor.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+
+        gripper1.setPosition(0.0);
+        gripper2.setPosition(0.0);
+
+        telemetry.addLine("Initialized");
+        telemetry.addLine("NOTE: theta1 must come from an IMU or another joint sensor");
+        telemetry.update();
+
+        waitForStart();
+
+        ElapsedTime loopTimer = new ElapsedTime();
+        ElapsedTime stateTimer = new ElapsedTime();
+
+        double lastTheta1 = 0.0;
+        double lastTheta2 = 0.0;
+
+        while (opModeIsActive()) {
+
+            double dt = loopTimer.seconds();
+            loopTimer.reset();
+            if (dt <= 0.0) dt = 0.02;
+
+            // ----------------------------
+            // Read sensors
+            // ----------------------------
+            double d1 = distanceSensor1.getDistance(DistanceUnit.CM);
+            double d2 = distanceSensor2.getDistance(DistanceUnit.CM);
+
+            double theta1 = readTheta1Rad();         // IMPORTANT: replace with IMU / real sensor
+            double theta2 = getElbowAngleRad();
+
+            double dtheta1 = (theta1 - lastTheta1) / dt;
+            double dtheta2 = (theta2 - lastTheta2) / dt;
+
+            lastTheta1 = theta1;
+            lastTheta2 = theta2;
+
+            double tau2Cmd = 0.0;
+            double motorPower = 0.0;
+
+            // ----------------------------
+            // Brachiation state machine
+            // ----------------------------
+            switch (state) {
+
+                case PREPARE:
+                    // Set the gripping posture before swinging
+                    gripper1.setPosition(0.0);
+                    gripper2.setPosition(1.0);   // open/close depending on your calibration
+
+                    elbowMotor.setPower(0.0);
+
+                    if (stateTimer.seconds() > 0.5) {
+                        state = State.SWING;
+                        stateTimer.reset();
+                    }
+                    break;
+
+                case SWING:
+                    // PD-PFL law:
+                    // u1 = ddtheta1_ref + Kp1*e1 + Kd1*de1
+                    // u2 = ddtheta2_ref + Kp2*e2 + Kd2*de2
+                    double e1 = theta1Ref - theta1;
+                    double e2 = theta2Ref - theta2;
+                    double de1 = dtheta1Ref - dtheta1;
+                    double de2 = dtheta2Ref - dtheta2;
+
+                    double u1 = ddtheta1Ref + kp1 * e1 + kd1 * de1;
+                    double u2 = ddtheta2Ref + kp2 * e2 + kd2 * de2;
+
+                    tau2Cmd = computeTau2(u1, u2, theta1, theta2, dtheta1, dtheta2, 9.81);
+
+                    // Convert torque command to motor power
+                    motorPower = Range.clip(tau2Cmd / TAU2_MAX, -1.0, 1.0);
+                    elbowMotor.setPower(motorPower);
+
+                    // Catch condition: bar detected or timeout
+                    if (d2 < BAR_DETECT_CM || stateTimer.seconds() > 1.5) {
+                        state = State.CATCH;
+                        stateTimer.reset();
+                    }
+                    break;
+
+                case CATCH:
+                    elbowMotor.setPower(0.0);
+                    gripper2.setPosition(0.0);   // close on the next bar
+                    if (stateTimer.seconds() > 0.4) {
+                        state = State.HOLD;
+                        stateTimer.reset();
+                    }
+                    break;
+
+                case HOLD:
+                    elbowMotor.setPower(0.0);
+                    // keep the robot stable here, or move to the next brachiation cycle
+                    break;
+            }
+
+            telemetry.addData("State", state);
+            telemetry.addData("theta1 (rad)", theta1);
+            telemetry.addData("theta2 (rad)", theta2);
+            telemetry.addData("dtheta1 (rad/s)", dtheta1);
+            telemetry.addData("dtheta2 (rad/s)", dtheta2);
+            telemetry.addData("Dist1 (cm)", d1);
+            telemetry.addData("Dist2 (cm)", d2);
+            telemetry.addData("tau2 (Nm)", tau2Cmd);
+            telemetry.addData("motorPower", motorPower);
+            telemetry.update();
+        }
+    }
+
+    // ------------------------------------------------------------
+    // MATLAB Linearization(u1,u2,theta1,theta2,dtheta1,dtheta2,g)
+    // returns tau2 = second element of (M*[u1;u2] + C*dtheta + G)
+    // ------------------------------------------------------------
+    private double computeTau2(double u1, double u2,
+                               double theta1, double theta2,
+                               double dtheta1, double dtheta2,
+                               double g) {
+
+        double m11 = m2 * l1 * l1
+                + 2.0 * m2 * Math.cos(theta2) * l1 * lc2
+                + m1 * lc1 * lc1
+                + m2 * lc2 * lc2
+                + I1 + I2;
+
+        double m12 = m2 * lc2 * lc2
+                + l1 * lc2 * m2 * Math.cos(theta2)
+                + I2;
+
+        double m21 = m12;
+        double m22 = m2 * lc2 * lc2 + I2;
+
+        // Coriolis terms
+        double c21 = -dtheta1 * l1 * lc2 * m2 * Math.sin(theta2);
+        double c22 = 0.0;
+
+        // Gravity term
+        double G2 = m2 * g * lc2 * Math.sin(theta1 + theta2);
+
+        // second row of: M*u + C*dtheta + G
+        return m21 * u1 + m22 * u2 + c21 * dtheta1 + c22 * dtheta2 + G2;
+    }
+
+    // Elbow angle from encoder counts
+    private double getElbowAngleRad() {
+        int ticks = elbowMotor.getCurrentPosition();
+        double rev = (double) ticks / (TICKS_PER_REV * GEAR_RATIO);
+        return 2.0 * Math.PI * rev;
+    }
+
+    // second encoder on link 1.
+    private double readTheta1Rad() {
+        return 0.0;
+    }
+}
